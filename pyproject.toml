@@ -1,0 +1,14 @@
+[project]
+name = "whack-a-homole"
+version = "0.1.0"
+description = "土龍叩きならぬ人叩き made with Kivy"
+readme = "README.md"
+requires-python = ">=3.14"
+dependencies = [
+    "asynckivy>=0.11.0",
+    "kivy",
+]
+
+[tool.uv.sources]
+kivy = { git = "https://github.com/kivy/kivy", rev = "be90b9f4bdb28c734e1cc01d6e7a7e1440e5216e" }
+
