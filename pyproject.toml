@@ -12,3 +12,9 @@ dependencies = [
 [tool.uv.sources]
 kivy = { git = "https://github.com/kivy/kivy", rev = "be90b9f4bdb28c734e1cc01d6e7a7e1440e5216e" }
 
+[dependency-groups]
+dev = [
+    "pillow>=12.3.0",
+    "requests>=2.34.2",
+]
+
