@@ -7,6 +7,8 @@ requires-python = ">=3.14"
 dependencies = [
     "asynckivy>=0.11.0",
     "kivy",
+    "kivy-garden-i18n>=0.3.0",
+    "kivy-garden-pyle>=0.1.0",
 ]
 
 [tool.uv.sources]
