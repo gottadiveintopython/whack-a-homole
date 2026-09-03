@@ -1,6 +1,6 @@
 from collections.abc import Mapping
 from contextlib import ExitStack
-from functools import partial, cache
+from functools import partial
 import itertools
 
 from kivy.properties import (
@@ -8,7 +8,6 @@ from kivy.properties import (
 )
 from kivy.lang import Builder
 from kivy.graphics.texture import Texture
-from kivy.graphics import InstructionGroup
 from kivy._event import EventDispatcher
 from kivy.core.audio_output import Sound
 from kivy.uix.widget import Widget
@@ -142,12 +141,81 @@ async def spawn_enemy_from(
             else:
                 actor.texture = images["attack"]
                 actor.size_hint_x = enemy_relative_width * image_relative_widths["attack"]
+                await ak.sleep(0)
                 sounds["hurt"].play()
                 game_state.score -= 1
                 defer(ak.start(show_score_delta_on_actor(images["-1"], actor)).cancel)
                 await ak.sleep(dcoeff)
                 await anim_attrs(actor, reveal_ratio=0., d=.5 * dcoeff)
 
+            await anim_attrs(hole, scale=0., d=.5 * dcoeff)
+    finally:
+        hole.scale = 0.
+        game_state.available_holes.append(hole)
+
+
+async def spawn_ally_from(
+    hole: Hole,
+    *,
+    game_state: GameState,
+    speed=1.0,
+    ally_relative_width=0.7,
+    # displays_hurt_box=False,
+    # hurt_box_color=(1, 0, 0, 1),
+    images: Mapping[str, Texture],
+    image_relative_widths: Mapping[str, float],
+    sounds: Mapping[str, Sound],
+    _image_cache: list[PartiallyRevealableImage]=[],
+):
+    """
+    :param hole: The hole where an ally spawns.
+
+    :param speed:
+        A speed coefficient for the ally's movement.
+        A larger value makes the ally move faster.
+
+    :ally_relative_width:
+        The base width of the ally image relative to the width of the hole.
+
+    :param on_hit: Called when the player hits the ally.
+    :param on_gifted: Called when the ally gives the player a gift.
+    """
+    dcoeff = 1. / speed  # duration coefficient
+    try:
+        await anim_attrs(hole, scale=1., d=.5 * dcoeff)
+
+        with ExitStack() as stack:
+            defer = stack.callback
+
+            actor = _image_cache.pop() if _image_cache else PartiallyRevealableImage()
+            defer(_image_cache.append, actor)
+            actor.texture = images["neutral"]
+            actor.size_hint_x = ally_relative_width
+            actor.opacity = 1.
+            actor.reveal_ratio = 0.
+            hole.add_widget(actor)
+            defer(hole.remove_widget, actor)
+
+            await anim_attrs(actor, reveal_ratio=1.0, d=.5 * dcoeff)
+
+            async with ak.move_on_when(
+                ak.event(actor, "on_touch_down", filter=is_colliding_and_not_wheel)
+            ) as hit_tracker:
+                await ak.sleep(dcoeff)
+                actor.texture = images["deliver"]
+                actor.size_hint_x = ally_relative_width * image_relative_widths["deliver"]
+                await ak.sleep(dcoeff)
+            if hit_tracker.finished:
+                sounds["hit"].play()
+            else:
+                actor.texture = images["gift"]
+                actor.size_hint_x = ally_relative_width * image_relative_widths["gift"]
+                sounds["gift"].play()
+                game_state.score += 3
+                await ak.sleep(0)
+                defer(ak.start(show_score_delta_above_actor(images["+3"], actor)).cancel)
+                await ak.sleep(dcoeff)
+            await anim_attrs(actor, opacity=0., d=.5)
             await anim_attrs(hole, scale=0., d=.5 * dcoeff)
     finally:
         hole.scale = 0.
@@ -192,7 +260,7 @@ FloatLayout:
 """
 
 async def main(parent: FloatLayout, userdata: SharedObjects, *, _cache=[]):
-    from random import choice, random
+    from random import choice, random, choices
 
     s_data, s_states = userdata
 
@@ -211,7 +279,10 @@ async def main(parent: FloatLayout, userdata: SharedObjects, *, _cache=[]):
         grid = root.ids.grid_container.children[0]
         available_holes = [hole for row in grid.children for hole in row.children]
         game_state = GameState(available_holes=available_holes, score=0)
-        spawn_enemy_from_ = partial(spawn_enemy_from, game_state=game_state, **s_data.asdict())
+        spawn_funcs = (
+            partial(spawn_enemy_from, game_state=game_state, **s_data.asdict()),
+            partial(spawn_ally_from, game_state=game_state, **s_data.asdict()),
+        )
 
         yield
 
@@ -222,15 +293,30 @@ async def main(parent: FloatLayout, userdata: SharedObjects, *, _cache=[]):
                     continue
                 hole = choice(available_holes)
                 available_holes.remove(hole)
-                nursery.start(spawn_enemy_from_(hole))
+                nursery.start(choices(spawn_funcs, cum_weights=(0.7, 1.0))[0](hole))
 
         yield "whack_a_homole.scenes.title.main", transition.fade
 
 
 def show_score_delta_on_actor(score_image: Texture, actor: PartiallyRevealableImage):
-    w, h = score_image.size
+    hole = actor.parent
+    scale = hole.width / 160.
+    dw = score_image.width * scale  # display width
+    dh = score_image.height * scale  # display height
     return show_fading_image(
-        score_image, draw_target=actor.canvas.after,
-        pos=(actor.center_x - w * 0.5, actor.top - h),
-        # size=score_image.size,
+        score_image, draw_target=actor.canvas,
+        pos=(actor.center_x - dw * 0.5, actor.top - dh),
+        size=(dw, dh),
+    )
+
+
+def show_score_delta_above_actor(score_image: Texture, actor: PartiallyRevealableImage):
+    hole = actor.parent
+    scale = hole.width / 160.
+    dw = score_image.width * scale  # display width
+    dh = score_image.height * scale  # display height
+    return show_fading_image(
+        score_image, draw_target=actor.canvas,
+        pos=(actor.center_x - dw * 0.5, actor.top),
+        size=(dw, dh),
     )

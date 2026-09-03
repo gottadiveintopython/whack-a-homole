@@ -17,6 +17,14 @@ def crop_image(image_data: bytes) -> bytes:
         return f.getvalue()
 
 
+def resize_image(image_data: bytes, *, scale: float) -> bytes:
+    img = Image.open(BytesIO(image_data))
+    new_size = (int(img.width * scale), int(img.height * scale))
+    with BytesIO() as f:
+        img.resize(new_size).save(f, format="PNG")
+        return f.getvalue()
+
+
 def download_images() -> dict[str, bytes]:
     URLS = (
         ("neutral", r"https://blogger.googleusercontent.com/img/b/R29vZ2xl/AVvXsEgh1PA4Bjg2mGnrFcuufNP1WP2kPRqXMRJQSz-fHxBxRYSGjwZQmbkMEe495vP_23LwafvGR2her8vQhM836BMYvJvKCJVkH9NvHTJ5gdoyAz5bFuQIW7SUDX7gTDJC7qIsqyE9vhuU9Wg/s400/figure_standing.png"),
@@ -59,9 +67,11 @@ def download_assets(save_path: str):
             ) STRICT;
         """)
         images = download_images()
+        images = {name: crop_image(image_data) for name, image_data in images.items()}
+        images["gift"] = resize_image(images["gift"], scale=0.5)
         cur.executemany(
             "INSERT INTO Images(name, image_data) VALUES(?, ?)",
-            ((name, crop_image(image_data)) for name, image_data in images.items()),
+            images.items(),
         )
         sounds = download_sounds()
         cur.executemany(

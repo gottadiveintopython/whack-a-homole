@@ -47,9 +47,6 @@ async def run(parent: FloatLayout) -> None:
 
     images, sounds = load_assets()
     images.update(_generate_score_delta_images())
-    print("+1 size:", images["+1"].size)
-    print("-1 size:", images["-1"].size)
-    print("+3 size:", images["+3"].size)
 
     for s in sounds.values():
         s.volume = 0.5
