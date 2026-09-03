@@ -1,19 +1,24 @@
-__all__ = ("OutlinedButton", "ask_yes_no_question", )
+__all__ = ("OutlinedButton", "ask_yes_no_question", "AspectRatio", )
 
 from collections.abc import Awaitable
 from typing import Literal
 import itertools
 from functools import partial
 
-from kivy.properties import ColorProperty, NumericProperty
+from kivy.properties import (
+    ColorProperty, NumericProperty, BoundedNumericProperty, OptionProperty,
+)
 from kivy.graphics import Scale
 from kivy.lang import Builder
 from kivy.factory import Factory as F
 from kivy.clock import Clock
+from kivy.uix.layout import Layout
 from kivy.uix.label import Label
 
 import asynckivy as ak
 from asynckivy import modal
+
+from whack_a_homole.utils import is_colliding_and_not_wheel
 
 
 Builder.load_string("""
@@ -55,9 +60,6 @@ Builder.load_string("""
             id: yes_button
             size_hint_min: self.texture_size
 """)
-
-def is_pos_colliding_and_not_wheel(w, t) -> bool:
-    return w.collide_point(*t.pos) and (not t.is_mouse_scrolling)
 
 
 class OutlinedButton(Label):
@@ -107,7 +109,7 @@ class OutlinedButton(Label):
         try:
             while True:
                 __, touch = await ak.event(
-                    self, "on_touch_down", filter=is_pos_colliding_and_not_wheel, stop_dispatching=True)
+                    self, "on_touch_down", filter=is_colliding_and_not_wheel, stop_dispatching=True)
                 color_inst.rgba = outline_color2
                 start_blinking()
                 async with ak.rest_of_touch_events(self, touch, stop_dispatching=True) as on_touch_move:
@@ -169,3 +171,62 @@ async def ask_yes_no_question(
         return "yes" if tasks[0].finished else "no"
     finally:
         _cache.append(dialog)
+
+
+class AspectRatio(Layout):
+    '''
+    Flutter's AspectRatio
+    https://www.youtube.com/watch?v=XcnP3_mO_Ms
+    '''
+    child_aspect_ratio = BoundedNumericProperty(1.0, min=0.0)
+    halign = OptionProperty("center", options=("center", "middle", "left", "right", ))
+    valign = OptionProperty("center", options=("center", "middle", "bottom", "top", ))
+    halign2attr = {
+        "center": "center_x",
+        "middle": "center_x",
+        "left": "x",
+        "right": "right",
+    }
+    valign2attr = {
+        "center": "center_y",
+        "middle": "center_y",
+        "bottom": "y",
+        "top": "top",
+    }
+    additional_props_that_trigger_layout = ("parent", "children", "size", "pos", "child_aspect_ratio", "halign", "valign", )
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        f = self.fbind
+        t = self._trigger_layout
+        for prop in self.additional_props_that_trigger_layout:
+            f(prop, t)
+
+    def do_layout(self, *args):
+        setattr_ = setattr
+        getattr_ = getattr
+        aspect_ratio = self.child_aspect_ratio
+        w, h = self.size
+        x_attr = self.halign2attr[self.halign]
+        y_attr = self.valign2attr[self.valign]
+        x_value = getattr_(self, x_attr)
+        y_value = getattr_(self, y_attr)
+        if (not aspect_ratio) or w <= 0 or h <= 0:
+            for c in self.children:
+                c.width = 0
+                c.height = 0
+                setattr_(c, x_attr, x_value)
+                setattr_(c, y_attr, y_value)
+        elif (w / h) < aspect_ratio:
+            for c in self.children:
+                c.width = w
+                c.height = w / aspect_ratio
+                c.x = self.x
+                setattr_(c, y_attr, y_value)
+        else:
+            for c in self.children:
+                c.width = h * aspect_ratio
+                c.height = h
+                setattr_(c, x_attr, x_value)
+                c.y = self.y
+

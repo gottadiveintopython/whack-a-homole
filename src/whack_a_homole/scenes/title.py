@@ -32,13 +32,13 @@ async def main(parent: FloatLayout, userdata: SharedObjects, *, _cache=[]):
     with ExitStack() as stack:
         defer = stack.callback
 
-        tree = _cache.pop() if _cache else Builder.load_string(KV)
-        defer(_cache.append, tree)
-        parent.add_widget(tree)
-        defer(parent.remove_widget, tree)
+        root = _cache.pop() if _cache else Builder.load_string(KV)
+        defer(_cache.append, root)
+        parent.add_widget(root)
+        defer(parent.remove_widget, root)
 
         yield
 
-        await ak.event(tree.ids.start_button, "on_release")
+        await ak.event(root.ids.start_button, "on_release")
 
-        yield "whack_a_homole.scenes.menu.main", transition.fade
+        yield "whack_a_homole.scenes.game.main", transition.fade

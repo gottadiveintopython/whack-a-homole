@@ -1,0 +1,2 @@
+- 効果音たちはSQLite Databaseに埋めずに個別のファイルとする。
+- アプリ完成時に `ask_yes_no_question` が使われていなかれば削除

@@ -36,7 +36,7 @@ def download_images() -> dict[str, bytes]:
 def download_sounds() -> dict[str, bytes]:
     URLS = (
         ("hit", r"https://maou.audio/sound/se/maou_se_battle07.wav"),
-        ("get-hit", r"https://maou.audio/sound/se/maou_se_battle18.wav"),
+        ("hurt", r"https://maou.audio/sound/se/maou_se_battle18.wav"),
         ("gift", r"https://maou.audio/sound/se/maou_se_system46.wav"),
     )
     with requests.Session() as s:

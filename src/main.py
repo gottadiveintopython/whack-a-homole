@@ -1,5 +1,8 @@
 from os import environ
 environ.setdefault("KIVY_DESKTOP_PATH_ID", "Whack-A-Homole")
+# I remove GstPlayer from the list for a reason.
+# See the comments in `_load_sounds` for details.
+environ.setdefault("KIVY_AUDIO_OUTPUT", "android,sdl3")
 
 from textwrap import dedent
 

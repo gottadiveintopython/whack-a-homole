@@ -34,12 +34,12 @@ class SceneSwitcherError(Exception):
     '''
 
 
-async def _empty_scene(parent: Widget, userdata: UserData):
+async def _empty_scene(parent: Widget, userdata: Any):
     yield
     yield None, None
 
 
-async def run(first_scene: Scene | str, first_transition=None, *, parent: Widget=None, userdata: UserData=None):
+async def run(first_scene: Scene | str, first_transition=None, *, parent: Widget=None, userdata: Any=None):
     non_pausing_await = _non_pausing_await
     empty_scene = _empty_scene
     nullctx = contextlib.nullcontext()

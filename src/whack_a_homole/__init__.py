@@ -3,40 +3,68 @@ __all__ = ("SharedObjects", "run", )
 from typing import TypeAlias
 from functools import partial
 from contextlib import closing
-from dataclasses import dataclass
+import dataclasses
 from io import BytesIO
 import pathlib
 import sqlite3
 from importlib import resources
 
+from kivy.utils import get_color_from_hex
+from kivy.metrics import dp as metrics_dp
 from kivy.graphics.texture import Texture
 from kivy.core.audio_output import SoundLoader, Sound
 from kivy.core.image import Image as CoreImage
+from kivy.uix.floatlayout import FloatLayout
 
 
-@dataclass(kw_only=True)
-class AppState:
+@dataclasses.dataclass(kw_only=True)
+class SharedState:
     displays_hit_boxes: bool = False
     game_duration: float = 30.0
     last_game_score: int = -1
 
 
-SharedObjects: TypeAlias = tuple[dict[str, Texture], dict[str, Sound], AppState]
+@dataclasses.dataclass(kw_only=True, frozen=True)
+class SharedData:
+    images: dict[str, Texture]
+    image_relative_widths: dict[str, float]
+    sounds: dict[str, Sound]
+
+    def asdict(self):
+        '''Return a shallow dictionary representation of the dataclass.'''
+        return {field.name: getattr(self, field.name) for field in dataclasses.fields(self)}
+
+
+SharedObjects: TypeAlias = tuple[SharedData, SharedState]
 '''
-This is shared across scenes, and is passed to each scene as the ``userdata`` argument.
+This is passed to each scene as the ``userdata`` argument.
 '''
 
 
-async def run(parent):
+async def run(parent: FloatLayout) -> None:
     from asynckivy import transition
     from . import sceneswitcher
 
     images, sounds = load_assets()
+    images.update(_generate_score_delta_images())
+    print("+1 size:", images["+1"].size)
+    print("-1 size:", images["-1"].size)
+    print("+3 size:", images["+3"].size)
+
+    for s in sounds.values():
+        s.volume = 0.5
     await sceneswitcher.run(
-        "whack_a_homole.scenes.title.main",
+        "whack_a_homole.scenes.game.main",
         transition.fade,
         parent=parent,
-        userdata=(images, sounds, AppState()),
+        userdata=(
+            SharedData(
+                images=images,
+                image_relative_widths=_calc_widths_of_images_relative_to_the_neutral_image(images),
+                sounds=sounds,
+            ),
+            SharedState(),
+        ),
     )
 
 
@@ -59,9 +87,12 @@ def _load_images(cur: sqlite3.Cursor) -> dict[str, Texture]:
 
 def _load_sounds(cur: sqlite3.Cursor) -> dict[str, Sound]:
     import tempfile
-    # SoundLoader does not support loading from memory yet,
-    # so we first write to a temporary file, then load it.
-    # https://github.com/kivy/kivy/pull/8799
+    # SoundLoader does not support loading from memory yet, so I need to write to a temporary file,
+    # then load it. (https://github.com/kivy/kivy/pull/8799)
+    #
+    # Also, the GstPlayer provider appears to require the source file used to create a Sound
+    # instance to remain available whenever the sound is played, so this function does not work
+    # with that provider because it deletes the source files.
 
     with tempfile.TemporaryDirectory() as tmpdir:
         tmpdir = pathlib.Path(tmpdir)
@@ -81,3 +112,22 @@ def load_assets() -> tuple[dict[str, Texture], dict[str, Sound]]:
         conn.deserialize(resources.read_binary("whack_a_homole", "assets.sqlite3"))
         with closing(conn.cursor()) as cur:
             return _load_images(cur), _load_sounds(cur)
+
+
+def _calc_widths_of_images_relative_to_the_neutral_image(images: dict[str, Texture]):
+    base_width = images["neutral"].width
+    return {
+        name: image.width / base_width
+        for name, image in images.items()
+    }
+
+
+def _generate_score_delta_images(**label_options) -> dict[str, Texture]:
+    from whack_a_homole.utils import render_text_to_texture
+
+    label_options.setdefault("color", get_color_from_hex("#8470ff"))
+    label_options.setdefault("font_size", metrics_dp(80))
+    return {
+        text: render_text_to_texture(text, **label_options)
+        for text in "+1 -1 +3".split()
+    }

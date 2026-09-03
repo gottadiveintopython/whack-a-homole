@@ -1,211 +1,236 @@
-from collections.abc import Sequence, Mapping, Callable, Iterable
-from functools import partial
-from contextlib import ExitStack, nullcontext
+from collections.abc import Mapping
+from contextlib import ExitStack
+from functools import partial, cache
+import itertools
 
-from kivy.graphics import (
-    InstructionGroup, Color, Rectangle, CanvasBase, Ellipse,
-    StencilPush, StencilUse, StencilUnUse, StencilPop,
+from kivy.properties import (
+    NumericProperty, BoundedNumericProperty, ObjectProperty, ColorProperty,
 )
-from kivy._event import EventDispatcher
-from kivy.properties import NumericProperty, ObjectProperty, ReferenceListProperty, BoundedNumericProperty
-from kivy.clock import Clock
+from kivy.lang import Builder
 from kivy.graphics.texture import Texture
+from kivy.graphics import InstructionGroup
+from kivy._event import EventDispatcher
 from kivy.core.audio_output import Sound
 from kivy.uix.widget import Widget
+from kivy.uix.floatlayout import FloatLayout
+from kivy.uix.boxlayout import BoxLayout
 import asynckivy as ak
-from asynckivy import anim_attrs_abbr as anim_attrs
+from asynckivy import transition, anim_attrs_abbr as anim_attrs
 
-KV = r"""
-<HomoleSlot>:
+
+from whack_a_homole import SharedObjects, uix
+from whack_a_homole.utils import is_colliding_and_not_wheel, show_fading_image
+
+
+Builder.load_string("""
+<Hole>:
+    canvas.before:
+        Color:
+            # The Ellipse instruction has a bug where setting its size to (0, 0) can sometimes leave a visible artifact.
+            # As a workaround, I set its color to fully transparent when the scale is 0.
+            rgba: self.color if self.scale else (0, 0, 0, 0)
+        Ellipse:
+            size:
+                (
+                s := self.scale,
+                ) and (self.width * s, self.height * s)
+            pos:
+                (
+                s := (1. - self.scale) / 2.,
+                ) and (self.x + self.width * s, self.y + self.height * s)
+
+<PartiallyRevealableImage>:
+    texture_aspect_ratio: (t := self.texture, ) and (0. if t is None else t.height / t.width)
+    size_hint_y: None
+    height: self.width * self.texture_aspect_ratio * self.reveal_ratio
+    pos_hint: {"center_x": .5, "y": .5, }
     canvas:
         Color:
         Rectangle:
-            pos: self.pos
             size: self.size
+            pos: self.pos
             texture: self.texture
-"""
+            tex_coords: (r := self.reveal_ratio, ) and (0., r, 1., r, 1., 0., 0., 0.)
+""")
 
-async def spawn_enemy(
+
+class Hole(FloatLayout):
+    color = ColorProperty("#333333FF")
+    scale = NumericProperty(0.)
+
+
+class PartiallyRevealableImage(Widget):
+    texture = ObjectProperty(None, allownone=True)
+
+    texture_aspect_ratio = NumericProperty(0.)
+    '''
+    (read-only)
+    Texture height / width ratio. 0.0 if the texture is None.
+    '''
+
+    reveal_ratio = BoundedNumericProperty(1.0, min=0.0, max=1.0)
+    '''
+    The ratio of the revealed area of the texture.
+
+    * 0.0 ... None of the texture is visible.
+    * 0.5 ... Only the upper half of the texture is visible.
+    * 1.0 ... The whole texture is visible.
+    '''
+
+
+class GameState(EventDispatcher):
+    available_holes: list[Hole] = ObjectProperty()
+    score: int = NumericProperty()
+
+
+async def spawn_enemy_from(
+    hole: Hole,
     *,
-    draw_target: InstructionGroup,
-    hole_pos: Sequence[float],
-    hole_size: Sequence[float],
-    hole_color=(0.2, 0.2, 0.2, 1),
+    game_state: GameState,
     speed=1.0,
-    displays_hurt_box=False,
-    hurt_box_color=(1, 0, 0, 1),
+    enemy_relative_width=0.7,
+    # displays_hurt_box=False,
+    # hurt_box_color=(1, 0, 0, 1),
     images: Mapping[str, Texture],
+    image_relative_widths: Mapping[str, float],
     sounds: Mapping[str, Sound],
-    touch_listener: Widget=None,
-    on_hit: Callable=None,
-    on_get_hit: Callable=None,
+    _image_cache: list[PartiallyRevealableImage]=[],
 ):
     """
-    :param hole_pos: bottom-left corner
-    :param hole_size: width and height
+    :param hole: The hole where an enemy spawns.
 
     :param speed:
         A speed coefficient for the enemy's movement.
         A larger value makes the enemy move faster.
 
-    :param touch_listener:
-        A widget used to receive touch events.
-        If None, the spawned enemy will not respond to touches.
+    :enemy_relative_width:
+        The base width of the enemy image relative to the width of the hole.
 
     :param on_hit: Called when the player hits the enemy.
-    :param on_get_hit: Called when the enemy hits the player.
+    :param on_hurt: Called when the enemy hits the player.
     """
-    speed = 1.0 / speed
-    hole_x, hole_y = hole_pos
-    hole_width, hole_height = hole_size
-    hole_center_x = hole_x + hole_width / 2
-    hole_center_y = hole_y + hole_height / 2
-    hole_center = (hole_center_x, hole_center_y)
-    calc_pos_and_size = partial(
-        _calc_actor_pos_and_size,
-        hole_center_x,
-        hole_center_y,
-        hole_width,
-    )
-    nullctx = nullcontext()
-
-    draw_target.add(root_canvas := CanvasBase())
+    dcoeff = 1. / speed  # duration coefficient
     try:
-        # open a hole
-        with root_canvas:
-            Color(*hole_color)
-            hole_ellipse = Ellipse(pos=hole_center, size=(0, 0))
-        await anim_attrs(hole_ellipse, pos=hole_pos, size=hole_size, d=.5 * speed)
+        await anim_attrs(hole, scale=1., d=.5 * dcoeff)
 
-        # ---------------------------------------
-        # enemy in action
-        # ---------------------------------------
-        root_canvas.add(enemy_canvas := CanvasBase())
-        with enemy_canvas:
-            StencilPush()
-            visible_area = Rectangle(pos=(0, hole_center_y), size=(99999, 99999))
-            StencilUse()
-            enemy_color = Color()
-            enemy_rect = Rectangle()
-            StencilUnUse()
-            enemy_canvas.add(visible_area)
-            StencilPop()
+        with ExitStack() as stack:
+            defer = stack.callback
 
-        # spawn an enemy
-        cur_img = images["neutral"]
-        enemy_rect.texture = cur_img
-        appearing_pos, enemy_size = calc_pos_and_size(cur_img)
-        hiding_pos = (appearing_pos[0], appearing_pos[1] - enemy_size[1])
-        enemy_rect.pos = hiding_pos
-        enemy_rect.size = enemy_size
-        await anim_attrs(enemy_rect, pos=appearing_pos, d=.5 * speed)
+            actor = _image_cache.pop() if _image_cache else PartiallyRevealableImage()
+            defer(_image_cache.append, actor)
+            actor.texture = images["neutral"]
+            actor.size_hint_x = enemy_relative_width
+            actor.opacity = 1.
+            actor.reveal_ratio = 0.
+            hole.add_widget(actor)
+            defer(hole.remove_widget, actor)
 
-        async with ak.move_on_when(
-            ak.sleep_forever() if touch_listener is None else
-            ak.event(touch_listener, "on_touch_down", lambda w, t: "<enemy>".collide_point(*t.pos))
-        ) as hit_tracker:
-            await ak.sleep(speed)
-            enemy_rect.texture = cur_img = images["square-off"]
-            appearing_pos, enemy_size = calc_pos_and_size(cur_img)
-            enemy_rect.pos = appearing_pos
-            enemy_rect.size = enemy_size
-            await ak.sleep(speed)
+            await anim_attrs(actor, reveal_ratio=1.0, d=.5 * dcoeff)
 
-        if hit_tracker.finished:
-            on_hit()  # 効果音, +1点
-            await anim_attrs(enemy_color, a=0., d=.5)
-        else:
-            enemy_rect.texture = cur_img = images["attack"]
-            appearing_pos, enemy_size = calc_pos_and_size(cur_img)
-            hiding_pos = (appearing_pos[0], appearing_pos[1] - enemy_size[1])
-            enemy_rect.pos = appearing_pos
-            enemy_rect.size = enemy_size
-            on_get_hit()  # 効果音, -1点, 紅の点滅
-            await anim_attrs(enemy_rect, pos=hiding_pos, d=.5 * speed)
-        root_canvas.remove(enemy_canvas)
+            async with ak.move_on_when(
+                ak.event(actor, "on_touch_down", filter=is_colliding_and_not_wheel)
+            ) as hit_tracker:
+                await ak.sleep(dcoeff)
+                actor.texture = images["square-off"]
+                actor.size_hint_x = enemy_relative_width * image_relative_widths["square-off"]
+                await ak.sleep(dcoeff)
+            if hit_tracker.finished:
+                sounds["hit"].play()
+                game_state.score += 1
+                defer(ak.start(show_score_delta_on_actor(images["+1"], actor)).cancel)
+                await anim_attrs(actor, opacity=0., d=.5)
+            else:
+                actor.texture = images["attack"]
+                actor.size_hint_x = enemy_relative_width * image_relative_widths["attack"]
+                sounds["hurt"].play()
+                game_state.score -= 1
+                defer(ak.start(show_score_delta_on_actor(images["-1"], actor)).cancel)
+                await ak.sleep(dcoeff)
+                await anim_attrs(actor, reveal_ratio=0., d=.5 * dcoeff)
 
-        # close the hole
-        await anim_attrs(hole_ellipse, pos=hole_center, size=(0, 0), d=.5 * speed)
+            await anim_attrs(hole, scale=0., d=.5 * dcoeff)
     finally:
-        draw_target.remove(root_canvas)
+        hole.scale = 0.
+        game_state.available_holes.append(hole)
 
 
-def _calc_actor_pos_and_size(
-    hole_center_x, hole_center_y, hole_width, actor_img, actor_relative_width=0.9,
-) -> tuple[tuple[float, float], tuple[float, float]]:
-    actor_width = hole_width * actor_relative_width
-    pos = (hole_center_x - actor_width / 2, hole_center_y)
-    aspect_ratio = actor_img.height / actor_img.width
-    size = (actor_width, actor_width * aspect_ratio)
-    return pos, size
+def build_a_grid_of_holes(
+    *, n_rows=3, n_cols=5, row_spacing="40dp", col_spacing="30dp", relative_row_width=0.9,
+    _get_row_pos_hint = itertools.cycle([{"x": 0.}, {"right": 1.}]).__next__,
+) -> BoxLayout:
+    root = BoxLayout(
+        pos_hint={"x": 0, "y": 0, },
+        orientation="vertical",
+        spacing=row_spacing,
+    )
+    for i in range(n_rows):
+        row = BoxLayout(
+            spacing=col_spacing,
+            size_hint_x=relative_row_width,
+            pos_hint=_get_row_pos_hint().copy(),
+        )
+        root.add_widget(row)
+        for __ in range(n_cols):
+            row.add_widget(Hole())
+    return root
 
 
-class HomoleSlot(Widget):
-    actor_image: Texture = ObjectProperty(None, allownone=True)
+KV = """
+FloatLayout:
+    pos_hint: {"x": 0, "y": 0, }
+    AspectRatio:
+        size_hint: .96, .92
+        pos_hint: {"center_x": .5, "center_y": .5, }
+        child_aspect_ratio: 4 / 3
+        halign: "center"
+        valign: "bottom"
+        AspectRatio:
+            id: grid_container
+            child_aspect_ratio: 8 / 3
+            halign: "center"
+            valign: "bottom"
+"""
 
-    actor_relative_width = NumericProperty(0.9)
-    '''
-    The width of the actor image relative to the width of the widget.
-    '''
+async def main(parent: FloatLayout, userdata: SharedObjects, *, _cache=[]):
+    from random import choice, random
 
-    reveal_ratio = BoundedNumericProperty(1.0, min=0.0, max=1.0)
-    '''
-    The ratio of the revealed area of the actor image.
+    s_data, s_states = userdata
 
-    * 0.0 ... None of the image is visible.
-    * 0.5 ... Only the upper half of the image is visible.
-    * 1.0 ... The whole image is visible.
-    '''
+    with ExitStack() as stack:
+        defer = stack.callback
 
-    def __init__(self, **kwargs):
-        super().__init__(**kwargs)
-        with self.canvas:
-            Color()
-            self._rect_inst = Rectangle()
+        if _cache:
+            root = _cache.pop()
+        else:
+            root = Builder.load_string(KV)
+            root.ids.grid_container.add_widget(build_a_grid_of_holes())
+        defer(_cache.append, root)
+        parent.add_widget(root)
+        defer(parent.remove_widget, root)
 
-    def _update_revealed_area(self, dt):
-        self._revealed_area.pos = (0, self.hole_center_y)
+        grid = root.ids.grid_container.children[0]
+        available_holes = [hole for row in grid.children for hole in row.children]
+        game_state = GameState(available_holes=available_holes, score=0)
+        spawn_enemy_from_ = partial(spawn_enemy_from, game_state=game_state, **s_data.asdict())
 
-    def collide_point(self, x, y):
-        if self.texture is None or self.reveal_ratio <= 0.:
-            return False
-        rx, ry = self._rect_inst.pos
-        rw, rh = self._rect_inst.size
-        return rx <= x < rx + rw and ry <= y < ry + rh
+        yield
 
+        async with ak.open_nursery() as nursery:
+            while True:
+                await ak.sleep(2. * random())
+                if not available_holes:
+                    continue
+                hole = choice(available_holes)
+                available_holes.remove(hole)
+                nursery.start(spawn_enemy_from_(hole))
 
-class Hole:
-    r_x = NumericProperty()
-    hole_center_y = NumericProperty()
-    hole_center = ReferenceListProperty(hole_center_x, hole_center_y)
-    hole_width = NumericProperty()
+        yield "whack_a_homole.scenes.title.main", transition.fade
 
 
-class RowOfHoles(Widget):
-    '''
-    A BoxLayout-like widget that lays out Holes horizontally.
-    '''
-
-    spacing = NumericProperty()
-    child_width = NumericProperty()
-
-    def __init__(self, **kwargs):
-        super().__init__(**kwargs)
-        self.holes: list[Hole] = []
-        self._trigger_layout = t = Clock.create_trigger(self._do_layout, -1)
-        self.bind(pos=t, size=t, spacing=t, child_width=t)
-
-    def add_hole(self, hole: Hole):
-        hole.parent = self
-        self.holes.append(hole)
-        self.canvas.add(hole.canvas)
-        self._trigger_layout()
-
-    def _do_layout(self, *args):
-        x, y = self.pos
-        hole_size = (self.child_width, self.height)
-        stride = self.child_width + self.spacing
-        for hole in self.holes:
-            hole.pos = (x, y)
-            hole.size = hole_size
-            x += stride
+def show_score_delta_on_actor(score_image: Texture, actor: PartiallyRevealableImage):
+    w, h = score_image.size
+    return show_fading_image(
+        score_image, draw_target=actor.canvas.after,
+        pos=(actor.center_x - w * 0.5, actor.top - h),
+        # size=score_image.size,
+    )
