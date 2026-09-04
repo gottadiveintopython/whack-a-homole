@@ -127,7 +127,7 @@ async def spawn_enemy_from(
             await anim_attrs(actor, reveal_ratio=1.0, d=.5 * dcoeff)
 
             async with ak.move_on_when(
-                ak.event(actor, "on_touch_down", filter=is_colliding_and_not_wheel)
+                ak.event(actor, "on_touch_down", filter=is_colliding_and_not_wheel, stop_dispatching=True)
             ) as hit_tracker:
                 await ak.sleep(dcoeff)
                 actor.texture = images["square-off"]
@@ -199,7 +199,7 @@ async def spawn_ally_from(
             await anim_attrs(actor, reveal_ratio=1.0, d=.5 * dcoeff)
 
             async with ak.move_on_when(
-                ak.event(actor, "on_touch_down", filter=is_colliding_and_not_wheel)
+                ak.event(actor, "on_touch_down", filter=is_colliding_and_not_wheel, stop_dispatching=True)
             ) as hit_tracker:
                 await ak.sleep(dcoeff)
                 actor.texture = images["deliver"]

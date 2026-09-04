@@ -119,12 +119,16 @@ def _calc_widths_of_images_relative_to_the_neutral_image(images: dict[str, Textu
     }
 
 
-def _generate_score_delta_images(**label_options) -> dict[str, Texture]:
+def _generate_score_delta_images() -> dict[str, Texture]:
     from whack_a_homole.utils import render_text_to_texture
 
-    label_options.setdefault("color", get_color_from_hex("#8470ff"))
-    label_options.setdefault("font_size", metrics_dp(80))
+    font_size = metrics_dp(80)
     return {
-        text: render_text_to_texture(text, **label_options)
-        for text in "+1 -1 +3".split()
+        text: render_text_to_texture(
+            text, font_size=font_size, color=get_color_from_hex(color), bold=True)
+        for text, color in (
+            ("-1", "#8470ff"),
+            ("+1", "#45af23"),
+            ("+3", "#84ff23"),
+        )
     }
