@@ -21,6 +21,7 @@ from kivy.uix.floatlayout import FloatLayout
 class SharedState:
     displays_hit_boxes: bool = False
     game_duration: float = 30.0
+    enemy_to_ally_ratio: tuple = (7, 3)
     last_game_score: int = -1
 
 
@@ -47,9 +48,9 @@ async def run(parent: FloatLayout) -> None:
 
     images, sounds = load_assets()
     images.update(_generate_score_delta_images())
-
     for s in sounds.values():
         s.volume = 0.5
+
     await sceneswitcher.run(
         "whack_a_homole.scenes.game.main",
         transition.fade,

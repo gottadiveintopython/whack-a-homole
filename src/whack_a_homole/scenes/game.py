@@ -4,9 +4,10 @@ from functools import partial
 import itertools
 
 from kivy.properties import (
-    NumericProperty, BoundedNumericProperty, ObjectProperty, ColorProperty,
+    NumericProperty, BoundedNumericProperty, ObjectProperty, ColorProperty
 )
 from kivy.lang import Builder
+from kivy.graphics import Rectangle, Color
 from kivy.graphics.texture import Texture
 from kivy._event import EventDispatcher
 from kivy.core.audio_output import Sound
@@ -29,14 +30,8 @@ Builder.load_string("""
             # As a workaround, I set its color to fully transparent when the scale is 0.
             rgba: self.color if self.scale else (0, 0, 0, 0)
         Ellipse:
-            size:
-                (
-                s := self.scale,
-                ) and (self.width * s, self.height * s)
-            pos:
-                (
-                s := (1. - self.scale) / 2.,
-                ) and (self.x + self.width * s, self.y + self.height * s)
+            size: (s := self.scale, ) and (self.width * s, self.height * s)
+            pos: (s := (1. - self.scale) / 2., ) and (self.x + self.width * s, self.y + self.height * s)
 
 <PartiallyRevealableImage>:
     texture_aspect_ratio: (t := self.texture, ) and (0. if t is None else t.height / t.width)
@@ -50,6 +45,45 @@ Builder.load_string("""
             pos: self.pos
             texture: self.texture
             tex_coords: (r := self.reveal_ratio, ) and (0., r, 1., r, 1., 0., 0., 0.)
+
+<CircularTimer>:
+    canvas:
+        Color:
+            rgba: self.color if self.remaining_time else (0, 0, 0, 0)
+        Ellipse:
+            size: self.size
+            pos: self.pos
+            angle_start: 360. * (1. - self.remaining_time / self.total_time)
+            angle_end: 360.
+
+<GameScreen>:
+    pos_hint: {"x": 0, "y": 0, }
+    orientation: "vertical"
+    padding: "10dp"
+    BoxLayout:
+        spacing: "10dp"
+        size_hint_y: None
+        height: self.minimum_height
+        Label:
+            id: score_label
+            size_hint_min: self.texture_size
+            pos_hint: {"center_y": .5, }
+            font_size: "30sp"
+            color: rgba("#8470ff")
+        CircularTimer:
+            id: timer
+            size_hint: None, None
+            size: dp(100), dp(100)
+            pos_hint: {"center_y": .5, }
+    AspectRatio:
+        child_aspect_ratio: 4 / 3
+        halign: "center"
+        valign: "bottom"
+        AspectRatio:
+            id: grid_container
+            child_aspect_ratio: 8 / 3
+            halign: "center"
+            valign: "bottom"
 """)
 
 
@@ -77,19 +111,32 @@ class PartiallyRevealableImage(Widget):
     '''
 
 
-class GameState(EventDispatcher):
-    available_holes: list[Hole] = ObjectProperty()
-    score: int = NumericProperty()
+class CircularTimer(Widget):
+    total_time = NumericProperty(1.0)
+    remaining_time = NumericProperty()
+    color = ColorProperty("#FFFFFFFF")
+
+
+class GameScreen(BoxLayout):
+    pass
+
+
+class SessionState(EventDispatcher):
+    score = NumericProperty()
+
+    def __init__(self, *, available_holes, displays_hit_boxes=False, **kwargs):
+        super().__init__(**kwargs)
+        self.speed = 1.0
+        self.displays_hit_boxes = displays_hit_boxes
+        self.available_holes = available_holes
 
 
 async def spawn_enemy_from(
     hole: Hole,
     *,
-    game_state: GameState,
-    speed=1.0,
+    root: GameScreen,
+    state: SessionState,
     enemy_relative_width=0.7,
-    # displays_hurt_box=False,
-    # hurt_box_color=(1, 0, 0, 1),
     images: Mapping[str, Texture],
     image_relative_widths: Mapping[str, float],
     sounds: Mapping[str, Sound],
@@ -98,17 +145,10 @@ async def spawn_enemy_from(
     """
     :param hole: The hole where an enemy spawns.
 
-    :param speed:
-        A speed coefficient for the enemy's movement.
-        A larger value makes the enemy move faster.
-
     :enemy_relative_width:
         The base width of the enemy image relative to the width of the hole.
-
-    :param on_hit: Called when the player hits the enemy.
-    :param on_hurt: Called when the enemy hits the player.
     """
-    dcoeff = 1. / speed  # duration coefficient
+    dcoeff = 1. / state.speed  # duration coefficient
     try:
         await anim_attrs(hole, scale=1., d=.5 * dcoeff)
 
@@ -135,7 +175,7 @@ async def spawn_enemy_from(
                 await ak.sleep(dcoeff)
             if hit_tracker.finished:
                 sounds["hit"].play()
-                game_state.score += 1
+                state.score += 1
                 defer(ak.start(show_score_delta_on_actor(images["+1"], actor)).cancel)
                 await anim_attrs(actor, opacity=0., d=.5)
             else:
@@ -143,25 +183,23 @@ async def spawn_enemy_from(
                 actor.size_hint_x = enemy_relative_width * image_relative_widths["attack"]
                 await ak.sleep(0)
                 sounds["hurt"].play()
-                game_state.score -= 1
+                state.score -= 1
                 defer(ak.start(show_score_delta_on_actor(images["-1"], actor)).cancel)
+                defer(ak.start(play_hurt_effect_on(root)).cancel)
                 await ak.sleep(dcoeff)
                 await anim_attrs(actor, reveal_ratio=0., d=.5 * dcoeff)
 
             await anim_attrs(hole, scale=0., d=.5 * dcoeff)
     finally:
         hole.scale = 0.
-        game_state.available_holes.append(hole)
+        state.available_holes.append(hole)
 
 
 async def spawn_ally_from(
     hole: Hole,
     *,
-    game_state: GameState,
-    speed=1.0,
+    state: SessionState,
     ally_relative_width=0.7,
-    # displays_hurt_box=False,
-    # hurt_box_color=(1, 0, 0, 1),
     images: Mapping[str, Texture],
     image_relative_widths: Mapping[str, float],
     sounds: Mapping[str, Sound],
@@ -170,17 +208,10 @@ async def spawn_ally_from(
     """
     :param hole: The hole where an ally spawns.
 
-    :param speed:
-        A speed coefficient for the ally's movement.
-        A larger value makes the ally move faster.
-
     :ally_relative_width:
         The base width of the ally image relative to the width of the hole.
-
-    :param on_hit: Called when the player hits the ally.
-    :param on_gifted: Called when the ally gives the player a gift.
     """
-    dcoeff = 1. / speed  # duration coefficient
+    dcoeff = 1. / state.speed  # duration coefficient
     try:
         await anim_attrs(hole, scale=1., d=.5 * dcoeff)
 
@@ -211,7 +242,7 @@ async def spawn_ally_from(
                 actor.texture = images["gift"]
                 actor.size_hint_x = ally_relative_width * image_relative_widths["gift"]
                 sounds["gift"].play()
-                game_state.score += 3
+                state.score += 3
                 await ak.sleep(0)
                 defer(ak.start(show_score_delta_above_actor(images["+3"], actor)).cancel)
                 await ak.sleep(dcoeff)
@@ -219,7 +250,7 @@ async def spawn_ally_from(
             await anim_attrs(hole, scale=0., d=.5 * dcoeff)
     finally:
         hole.scale = 0.
-        game_state.available_holes.append(hole)
+        state.available_holes.append(hole)
 
 
 def build_a_grid_of_holes(
@@ -243,22 +274,6 @@ def build_a_grid_of_holes(
     return root
 
 
-KV = """
-FloatLayout:
-    pos_hint: {"x": 0, "y": 0, }
-    AspectRatio:
-        size_hint: .96, .92
-        pos_hint: {"center_x": .5, "center_y": .5, }
-        child_aspect_ratio: 4 / 3
-        halign: "center"
-        valign: "bottom"
-        AspectRatio:
-            id: grid_container
-            child_aspect_ratio: 8 / 3
-            halign: "center"
-            valign: "bottom"
-"""
-
 async def main(parent: FloatLayout, userdata: SharedObjects, *, _cache=[]):
     from random import choice, random, choices
 
@@ -270,30 +285,42 @@ async def main(parent: FloatLayout, userdata: SharedObjects, *, _cache=[]):
         if _cache:
             root = _cache.pop()
         else:
-            root = Builder.load_string(KV)
-            root.ids.grid_container.add_widget(build_a_grid_of_holes())
+            root = GameScreen()
+            grid = build_a_grid_of_holes()
+            root.ids.grid_container.add_widget(grid)
+            root.holes = tuple(hole for row in grid.children for hole in row.children)
         defer(_cache.append, root)
         parent.add_widget(root)
         defer(parent.remove_widget, root)
 
-        grid = root.ids.grid_container.children[0]
-        available_holes = [hole for row in grid.children for hole in row.children]
-        game_state = GameState(available_holes=available_holes, score=0)
-        spawn_funcs = (
-            partial(spawn_enemy_from, game_state=game_state, **s_data.asdict()),
-            partial(spawn_ally_from, game_state=game_state, **s_data.asdict()),
+        available_holes = list(root.holes)
+        state = SessionState(
+            score=0,
+            available_holes=available_holes,
+            displays_hit_boxes=s_states.displays_hit_boxes,
         )
+        timer = root.ids.timer
+        timer.total_time = timer.remaining_time = s_states.game_duration
+
+        spawn_funcs = (
+            partial(spawn_enemy_from, state=state, root=root, **s_data.asdict()),
+            partial(spawn_ally_from, state=state, **s_data.asdict()),
+        )
+        r = s_states.enemy_to_ally_ratio
+        cum_weights = (r[0], r[0] + r[1])
+        del r
 
         yield
 
         async with ak.open_nursery() as nursery:
+            nursery.start(anim_attrs(timer, remaining_time=0., d=timer.total_time), close_on_finish=True)
             while True:
-                await ak.sleep(2. * random())
+                await ak.sleep(3. * random() / state.speed)
                 if not available_holes:
                     continue
                 hole = choice(available_holes)
                 available_holes.remove(hole)
-                nursery.start(choices(spawn_funcs, cum_weights=(0.7, 1.0))[0](hole))
+                nursery.start(choices(spawn_funcs, cum_weights=cum_weights)[0](hole))
 
         yield "whack_a_homole.scenes.title.main", transition.fade
 
@@ -320,3 +347,15 @@ def show_score_delta_above_actor(score_image: Texture, actor: PartiallyRevealabl
         pos=(actor.center_x - dw * 0.5, actor.top),
         size=(dw, dh),
     )
+
+
+async def play_hurt_effect_on(root: GameScreen):
+    draw_target = root.canvas.after
+    with draw_target:
+        color = Color(1, 0, 0, 0.3)
+        rect = Rectangle(size=root.size, pos=root.pos)
+    try:
+        await anim_attrs(color, a=0., d=.5)
+    finally:
+        draw_target.remove(rect)
+        draw_target.remove(color)
