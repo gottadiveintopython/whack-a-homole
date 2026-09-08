@@ -332,7 +332,7 @@ async def main(parent: FloatLayout, userdata: SharedStuff, *, _cache=[]):
         del r
 
         async with ak.move_on_when(anim_attrs(timer, remaining_time=0., d=timer.total_time)):
-            defer(ak.start(make_the_game_run_faster_as_time_goes_on(state, timer.total_time)).cancel)
+            defer(ak.start(anim_attrs(state, speed=3, d=timer.total_time, s=5.)).cancel)
             while True:
                 await ak.sleep(2.4 * random() / state.speed)
                 if not available_holes:
@@ -343,11 +343,6 @@ async def main(parent: FloatLayout, userdata: SharedStuff, *, _cache=[]):
         s_states.last_game_score = state.score
 
         yield "whack_a_homole.scenes.result.main", whiteout_transition
-
-
-async def make_the_game_run_faster_as_time_goes_on(state: SessionState, total_time: float):
-    await ak.sleep(5)
-    await anim_attrs(state, speed=3, d=(total_time - 5) * 0.7)
 
 
 def show_score_delta_on_actor(score_image: Texture, actor: PartiallyRevealableImage):
