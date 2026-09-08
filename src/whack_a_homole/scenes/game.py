@@ -290,7 +290,7 @@ def build_a_grid_of_holes(
 
 
 async def main(parent: FloatLayout, userdata: SharedStuff, *, _cache=[]):
-    from random import choice, random, choices
+    from random import choice, random
 
     s_data, s_states = userdata
 
@@ -328,7 +328,7 @@ async def main(parent: FloatLayout, userdata: SharedStuff, *, _cache=[]):
             partial(spawn_ally_from, state=state, **s_data.asdict()),
         )
         r = s_states.enemy_to_ally_ratio
-        cum_weights = (r[0], r[0] + r[1])
+        enemy_ratio = r[0] / (r[0] + r[1])
         del r
 
         async with ak.move_on_when(anim_attrs(timer, remaining_time=0., d=timer.total_time)):
@@ -339,7 +339,8 @@ async def main(parent: FloatLayout, userdata: SharedStuff, *, _cache=[]):
                     continue
                 hole = choice(available_holes)
                 available_holes.remove(hole)
-                defer(ak.start(choices(spawn_funcs, cum_weights=cum_weights)[0](hole)).cancel)
+                f = spawn_funcs[random() > enemy_ratio]
+                defer(ak.start(f(hole)).cancel)
         s_states.last_game_score = state.score
 
         yield "whack_a_homole.scenes.result.main", whiteout_transition
